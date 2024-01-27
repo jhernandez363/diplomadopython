@@ -1,0 +1,172 @@
+import network, time, urequests
+from machine import Pin, ADC, I2C
+from utime import sleep
+import ujson
+import ssd1306
+from framebuf import MONO_HLSB, FrameBuffer
+
+# Configuración de sensores
+sensor_Tem = ADC(Pin(32))
+sensor_Tem.atten(ADC.ATTN_11DB)
+sensor_Tem.width(ADC.WIDTH_12BIT)
+
+sensor_HS = ADC(Pin(34))
+sensor_HS.atten(ADC.ATTN_11DB)
+sensor_HS.width(ADC.WIDTH_12BIT)
+
+sensor_ll = ADC(Pin(35))
+sensor_ll.atten(ADC.ATTN_11DB)
+sensor_ll.width(ADC.WIDTH_12BIT)
+
+# Configuración de la comunicación I2C y pantalla OLED
+i2c = I2C(0, scl=Pin(22), sda=Pin(21))
+oled = ssd1306.SSD1306_I2C(128, 64, i2c)
+
+# Configuración del relé
+rele = Pin(25, Pin.OUT)
+
+# URL base para actualizar ThingSpeak
+url = ("https://api.thingspeak.com/update?api_key=WDMC2QEDK02BLY01&field1")
+
+# Función para leer la temperatura en grados Celsius
+def leer_temperatura():
+    valor_adc = sensor_Tem.read()
+    rango_temperatura_3v3 = 100
+    temperatura_celsius = (valor_adc / 1024) * rango_temperatura_3v3
+    respuesta = urequests.get(url + "&field1=" + str(temperatura_celsius))
+    respuesta.close()
+    return temperatura_celsius
+
+# Función para obtener la humedad del suelo
+def Humedad():
+    Humedad_Tierra = sensor_HS.read()
+    Humedad_T = 100 - Humedad_Tierra * 100 / 4095
+    
+    if Humedad_T <= 30:
+        Humedad_O = ("Seco")
+        rele.off()
+        respuesta = urequests.get(url + "&field3=" + str(Humedad_T))
+        respuesta.close()
+        
+    if 30 <= Humedad_T <= 60:
+        Humedad_O = ("Hum relativa")
+        rele.on()
+        respuesta = urequests.get(url + "&field3=" + str(Humedad_T))
+        respuesta.close()
+        
+    if 60 <= Humedad_T <= 100:
+        Humedad_O = ("Mojado")
+        rele.on()
+        respuesta = urequests.get(url + "&field3=" + str(Humedad_T))
+        respuesta.close()
+    
+    return Humedad_O
+
+# Función para detectar lluvia
+def Lluvia():
+    Lluvia_Hoy = sensor_ll.read()
+    Lluvia_H = 100 - Lluvia_Hoy * 100 / 4095
+    
+    if Lluvia_H <= 70:
+        Lluvia_O = ("No Llueve")
+        respuesta = urequests.get(url + "&field2=" + str(Lluvia_H))
+        respuesta.close()
+        
+    if 60 < Lluvia_H <= 100:
+        Lluvia_O = ("Llueve")
+        respuesta = urequests.get(url + "&field2=" + str(Lluvia_H))
+        respuesta.close()
+        
+    return Lluvia_O
+
+# Función para conectarse a una red WiFi
+def conectaWifi(red, password):
+    global miRed
+    miRed = network.WLAN(network.STA_IF)     
+    if not miRed.isconnected():
+        miRed.active(True)
+        miRed.connect(red, password)
+        print('Conectando a la red', red + "…")
+        timeout = time.time()
+        while not miRed.isconnected():
+            if (time.ticks_diff(time.time(), timeout) > 10):
+                return False
+    return True
+
+# Función para cargar una imagen monocroma desde un archivo
+def cargar_imagen(nombre_archivo):
+    with open(nombre_archivo, "rb") as f:
+        f.readline()  # Saltar encabezado PBM
+        comentario = f.readline().decode("utf-8").strip()
+        ancho, alto = map(int, f.readline().decode("utf-8").split())
+        datos = bytearray(f.read())
+    return ancho, alto, datos
+
+# Función para mostrar una imagen en la pantalla OLED
+def mostrar_imagen(oled, ancho, alto, datos):
+    fb = bytearray((ancho // 8) * alto)
+    fbuf = FrameBuffer(fb, ancho, alto, MONO_HLSB)
+
+    index = 0
+    for y in range(alto):
+        for x in range(ancho):
+            color = 1 if datos[index // 8] & (1 << (7 - index % 8)) else 0
+            fbuf.pixel(x, y, color)
+            index += 1
+
+    oled.fill(0)
+    oled.blit(fbuf, 0, 0)
+    oled.show()
+
+# Cargar y mostrar la imagen del logotipo
+ancho_logo, alto_logo, datos_logo = cargar_imagen("logo.pbm")
+mostrar_imagen(oled, ancho_logo, alto_logo, datos_logo)
+
+# Esperar unos segundos
+sleep(10)
+
+# Limpiar la pantalla
+oled.fill(0)
+oled.show()
+
+# Conectar a la red WiFi
+if conectaWifi("Desconectado.", "felipe06003"):
+    print ("Conexión exitosa!")
+    print('Datos de la red (IP/netmask/gw/DNS):', miRed.ifconfig())
+    
+    print("Conexión exitosa!")
+    oled.text("Conexion exitosa!", 0, 20)
+    oled.show()
+    
+    time.sleep(10)
+
+    # Limpiar la pantalla nuevamente
+    oled.fill(0)
+    oled.show()
+
+    url = ("https://api.thingspeak.com/update?api_key=WDMC2QEDK02BLY01&field1")
+
+    while True:
+        temperatura_actual = leer_temperatura()
+        print("Temperatura actual: {:.2f} °C".format(temperatura_actual))
+        Humedad_actual = Humedad()
+        print(Humedad_actual)
+        Lluvia_actual = Lluvia()
+        print(Lluvia_actual)
+        
+        print("Revisando Condiciones ...... ")
+        
+        oled.fill(0)
+        tem = int(temperatura_actual)
+        tem = str(tem)
+        hum = str(Humedad_actual)
+        lluv = str(Lluvia_actual)
+        oled.text("Tem: " + tem + "C", 0, 0)
+        oled.text(hum, 0, 10)
+        oled.text(lluv, 0, 20)
+        oled.show()
+        
+        time.sleep(10)
+else:
+    print("Imposible conectar")
+    miRed.active(False)
